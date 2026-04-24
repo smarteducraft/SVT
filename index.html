@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>소音프로젝트 - 소리 시각화 도구</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Pretendard', sans-serif;
+            background-color: #0a0a0a;
+            color: #ffffff;
+            margin: 0;
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+        }
+
+        .neon-text {
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.8), 0 0 20px rgba(0, 255, 255, 0.4);
+        }
+
+        .active-mode {
+            background: rgba(0, 255, 255, 0.2);
+            border-color: rgba(0, 255, 255, 0.5);
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.3);
+        }
+
+        #visualizer {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            pointer-events: none;
+        }
+
+        .ui-element {
+            pointer-events: auto;
+        }
+
+        input[type=range] {
+            accent-color: #00ffff;
+        }
+
+        /* Note History Scrollbar Hide */
+        #history-area::-webkit-scrollbar {
+            display: none;
+        }
+        #history-area {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="visualizer"></canvas>
+
+    <!-- Main UI Layer -->
+    <div class="ui-overlay h-full flex flex-col justify-between p-4 md:p-8">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-start">
+            <div class="glass-panel p-4 ui-element">
+                <h1 class="text-xl md:text-2xl font-bold neon-text">소音프로젝트</h1>
+                <p class="text-xs text-gray-400">소리 시각화 도구 v1.1</p>
+            </div>
+            
+            <div id="start-panel" class="glass-panel p-4 ui-element flex items-center gap-4">
+                <button id="toggle-audio" class="px-6 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-full font-bold transition-all transform active:scale-95 shadow-lg shadow-cyan-900/20">
+                    마이크 시작
+                </button>
+            </div>
+        </div>
+
+        <!-- Note Display (Centralized) -->
+        <div id="note-display" class="flex flex-col items-center justify-center opacity-0 transition-opacity duration-500">
+            <span id="current-note" class="text-6xl md:text-8xl font-bold neon-text text-center">도(C)</span>
+            <span id="current-freq" class="text-lg text-cyan-400 mt-2 font-mono">-- Hz</span>
+            
+            <!-- Note History Area -->
+            <div id="history-container" class="mt-8 w-full max-w-2xl px-4">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs font-bold text-gray-500 uppercase tracking-widest">Note History</span>
+                    <button onclick="clearHistory()" class="ui-element text-xs text-red-400 hover:text-red-300">기록 삭제</button>
+                </div>
+                <div id="history-area" class="glass-panel p-4 h-32 overflow-y-auto text-sm md:text-base leading-relaxed text-cyan-200/70 break-words">
+                    계이름 기록이 여기에 표시됩니다...
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Controls -->
+        <div class="flex flex-col gap-4 items-center w-full">
+            <!-- Mode Selection -->
+            <div class="glass-panel p-2 ui-element flex gap-1 md:gap-4 overflow-x-auto max-w-full">
+                <button onclick="setMode('color')" id="btn-color" class="mode-btn px-4 py-2 rounded-lg text-sm transition-all whitespace-nowrap">색깔</button>
+                <button onclick="setMode('shape')" id="btn-shape" class="mode-btn px-4 py-2 rounded-lg text-sm transition-all whitespace-nowrap">도형</button>
+                <button onclick="setMode('note')" id="btn-note" class="mode-btn px-4 py-2 rounded-lg text-sm transition-all whitespace-nowrap">계이름</button>
+                <button onclick="setMode('wave')" id="btn-wave" class="mode-btn px-4 py-2 rounded-lg text-sm transition-all whitespace-nowrap active-mode">꺾은선</button>
+                <button onclick="setMode('bar')" id="btn-bar" class="mode-btn px-4 py-2 rounded-lg text-sm transition-all whitespace-nowrap">막대그래프</button>
+            </div>
+
+            <!-- Sensitivity -->
+            <div class="glass-panel p-4 ui-element flex items-center gap-4 w-full max-w-md">
+                <span class="text-xs font-bold text-cyan-400 uppercase tracking-widest">Sens</span>
+                <input type="range" id="sensitivity" min="1" max="10" step="0.1" value="5" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('visualizer');
+        const ctx = canvas.getContext('2d');
+        const toggleBtn = document.getElementById('toggle-audio');
+        const sensitivityInput = document.getElementById('sensitivity');
+        const noteDisplay = document.getElementById('note-display');
+        const currentNoteEl = document.getElementById('current-note');
+        const currentFreqEl = document.getElementById('current-freq');
+        const historyArea = document.getElementById('history-area');
+
+        let audioCtx;
+        let analyser;
+        let microphone;
+        let dataArray;
+        let bufferLength;
+        let isRunning = false;
+        let currentMode = 'wave';
+
+        // Korean (English) Note table
+        const notes = [
+            "도(C)", "도#(C#)", "레(D)", "레#(D#)", "미(E)", "파(F)", 
+            "파#(F#)", "솔(G)", "솔#(G#)", "라(A)", "라#(A#)", "시(B)"
+        ];
+        
+        let noteHistory = [];
+        let lastDetectedNote = "";
+        let detectionCounter = 0; // To prevent flickering, count consistent frames
+
+        function getNoteFromFrequency(frequency) {
+            if (!frequency || frequency <= 0) return null;
+            const n = 12 * (Math.log2(frequency / 440)) + 69;
+            const noteIndex = Math.round(n) % 12;
+            const octave = Math.floor(Math.round(n) / 12) - 1;
+            return { name: notes[noteIndex], octave: octave };
+        }
+
+        function clearHistory() {
+            noteHistory = [];
+            historyArea.innerText = "기록 삭제됨";
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function setMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active-mode'));
+            document.getElementById(`btn-${mode}`).classList.add('active-mode');
+            
+            if (mode === 'note') {
+                noteDisplay.style.opacity = '1';
+                noteDisplay.style.pointerEvents = 'auto';
+            } else {
+                noteDisplay.style.opacity = '0';
+                noteDisplay.style.pointerEvents = 'none';
+            }
+        }
+
+        async function initAudio() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 2048;
+                microphone = audioCtx.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+
+                bufferLength = analyser.frequencyBinCount;
+                dataArray = new Uint8Array(bufferLength);
+                
+                isRunning = true;
+                toggleBtn.innerText = "중지하기";
+                toggleBtn.classList.replace('bg-cyan-600', 'bg-red-600');
+                
+                draw();
+            } catch (err) {
+                console.error("Microphone access error:", err);
+                alert("마이크 접근 권한이 필요합니다.");
+            }
+        }
+
+        toggleBtn.addEventListener('click', () => {
+            if (!audioCtx) {
+                initAudio();
+                return;
+            }
+
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+                isRunning = true;
+                toggleBtn.innerText = "중지하기";
+                toggleBtn.classList.replace('bg-cyan-600', 'bg-red-600');
+            } else {
+                audioCtx.suspend();
+                isRunning = false;
+                toggleBtn.innerText = "마이크 시작";
+                toggleBtn.classList.replace('bg-red-600', 'bg-cyan-600');
+            }
+        });
+
+        function autoCorrelate(buf, sampleRate) {
+            let SIZE = buf.length;
+            let MAX_SAMPLES = Math.floor(SIZE / 2);
+            let best_offset = -1;
+            let best_correlation = 0;
+            let rms = 0;
+            let foundGoodCorrelation = false;
+            let correlations = new Array(MAX_SAMPLES);
+
+            for (let i = 0; i < SIZE; i++) {
+                let val = (buf[i] - 128) / 128;
+                rms += val * val;
+            }
+            rms = Math.sqrt(rms / SIZE);
+            if (rms < 0.01) return -1;
+
+            let lastCorrelation = 1;
+            for (let offset = 0; offset < MAX_SAMPLES; offset++) {
+                let correlation = 0;
+                for (let i = 0; i < MAX_SAMPLES; i++) {
+                    correlation += Math.abs(((buf[i] - 128) / 128) - ((buf[i + offset] - 128) / 128));
+                }
+                correlation = 1 - (correlation / MAX_SAMPLES);
+                correlations[offset] = correlation;
+
+                if ((correlation > 0.9) && (correlation > lastCorrelation)) {
+                    foundGoodCorrelation = true;
+                    if (correlation > best_correlation) {
+                        best_correlation = correlation;
+                        best_offset = offset;
+                    }
+                } else if (foundGoodCorrelation) {
+                    let shift = (correlations[best_offset + 1] - correlations[best_offset - 1]) / correlations[best_offset];
+                    return sampleRate / (best_offset + (8 * shift));
+                }
+                lastCorrelation = correlation;
+            }
+            if (best_correlation > 0.01) {
+                return sampleRate / best_offset;
+            }
+            return -1;
+        }
+
+        function draw() {
+            if (!isRunning) return;
+            requestAnimationFrame(draw);
+
+            const sensitivity = parseFloat(sensitivityInput.value);
+            analyser.getByteTimeDomainData(dataArray);
+            const freqData = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(freqData);
+
+            ctx.fillStyle = 'rgba(10, 10, 10, 0.2)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                let val = (dataArray[i] - 128) / 128;
+                sum += val * val;
+            }
+            let rms = Math.sqrt(sum / bufferLength) * sensitivity;
+
+            if (currentMode === 'wave') drawWaveform(dataArray, sensitivity);
+            else if (currentMode === 'bar') drawBars(freqData);
+            else if (currentMode === 'color') drawColorCircle(rms, freqData);
+            else if (currentMode === 'shape') drawShapes(rms);
+            else if (currentMode === 'note') processNote(dataArray, rms);
+        }
+
+        function drawWaveform(data, sens) {
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#00ffff';
+            ctx.beginPath();
+            const sliceWidth = canvas.width / bufferLength;
+            let x = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                const v = (data[i] / 128.0);
+                const y = (v * (canvas.height / 2)) + ((v - 1) * 100 * sens);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+                x += sliceWidth;
+            }
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.stroke();
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#00ffff';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        function drawBars(data) {
+            const barWidth = (canvas.width / bufferLength) * 2.5;
+            let x = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                const barHeight = data[i] * 1.5;
+                const hue = (i / bufferLength) * 360;
+                ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+                ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
+        }
+
+        function drawColorCircle(rms, freq) {
+            let avgFreq = 0;
+            for(let i=0; i<100; i++) avgFreq += freq[i];
+            avgFreq /= 100;
+            const hue = (avgFreq * 2) % 360;
+            const radius = 100 + (rms * 300);
+            const grad = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, radius);
+            grad.addColorStop(0, `hsla(${hue}, 100%, 60%, 0.8)`);
+            grad.addColorStop(1, `hsla(${hue}, 100%, 20%, 0)`);
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(canvas.width/2, canvas.height/2, radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `hsla(${hue}, 100%, 50%, ${rms * 0.1})`;
+            ctx.fillRect(0,0, canvas.width, canvas.height);
+        }
+
+        function drawShapes(rms) {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const size = 50 + (rms * 400);
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 5;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#ff00ff';
+            const sides = 3 + Math.floor(rms * 10);
+            ctx.beginPath();
+            for (let i = 0; i <= sides; i++) {
+                const angle = (i / sides) * Math.PI * 2;
+                const x = centerX + Math.cos(angle) * size;
+                const y = centerY + Math.sin(angle) * size;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        function processNote(data, rms) {
+            const freq = autoCorrelate(data, audioCtx.sampleRate);
+            if (freq !== -1 && freq < 2000) {
+                const noteObj = getNoteFromFrequency(freq);
+                if (noteObj) {
+                    const fullNoteName = `${noteObj.name}${noteObj.octave}`;
+                    currentNoteEl.innerText = fullNoteName;
+                    currentFreqEl.innerText = Math.round(freq) + " Hz";
+
+                    // Update History Logic
+                    if (fullNoteName !== lastDetectedNote) {
+                        detectionCounter++;
+                        // Only add if consistent for a few frames to avoid noise
+                        if (detectionCounter > 5) {
+                            noteHistory.push(fullNoteName);
+                            lastDetectedNote = fullNoteName;
+                            detectionCounter = 0;
+                            
+                            // Keep history length manageable
+                            if (noteHistory.length > 100) noteHistory.shift();
+                            
+                            // Update display with comma separator
+                            historyArea.innerText = noteHistory.join(", ");
+                            // Auto scroll to bottom
+                            historyArea.scrollTop = historyArea.scrollHeight;
+                        }
+                    }
+                }
+            }
+            drawShapes(rms);
+        }
+
+        setMode('wave');
+
+    </script>
+</body>
+</html>
